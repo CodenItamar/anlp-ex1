@@ -20,8 +20,8 @@ def parse_args():
     parser.add_argument("--max_predict_samples", type=int, default=-1)
     # Training config
     parser.add_argument("--num_train_epochs", type=int, default=3)
-    parser.add_argument("--lr", type=float, default=0.01)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--lr", type=float, default=0.0001)
+    parser.add_argument("--batch_size", type=int, default=16)
     # Action flags
     parser.add_argument("--do_train", action="store_true",
                         help="Whether to run training.")
@@ -44,9 +44,6 @@ def preprocess_function(examples, tokenizer):
     )
 
 def train(args, tokenizer, datasets):
-    """
-    performing training based on the args given
-    """
     # Tokenize train and validation sets
     encoded_train = datasets["train"].map(lambda x: preprocess_function(x, tokenizer), batched=True)
     encoded_val = datasets["validation"].map(lambda x: preprocess_function(x, tokenizer), batched=True)
@@ -77,8 +74,9 @@ def train(args, tokenizer, datasets):
         compute_metrics=compute_metrics,
     )
 
-    trainer.train()
-    return trainer, trainer.args.output_dir
+    if args.do_train:
+        trainer.train()
+    return trainer
 
 def save_predictions(preds, test_dataset):
     fname = "predictions.txt"
@@ -93,56 +91,20 @@ def save_predictions(preds, test_dataset):
         table.add_data(s1, s2, int(p))
     wandb.log({"predictions": table})
 
-
-
-def qualitative_analysis(best_name, worst_name, test_dataset, results):
-    """
-    Print examples where best succeeded but worst failed.
-    """
-    best = results[best_name]["preds"]
-    worst = results[worst_name]["preds"]
-    label = test_dataset["label"]
-    count = 0
-    for i, (b, w, y) in enumerate(zip(best, worst, label)):
-        if b == y and w != y:
-            print(
-                f"Example {i}:\n  S1: {test_dataset['sentence1'][i]}\n  S2: {test_dataset['sentence2'][i]}\n  Label: {y}, best: {b}, worst: {w}\n")
-            count += 1
-            if count >= 5:
-                break
-
-
 def prepare_datasets(args, preprocess_function):
-    # Load raw GLUE MRPC dataset
     raw = load_dataset("glue", "mrpc")
-
-    # Load tokenizer from specified model path
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-
-    # # Split raw training data into train and validation sets (80-20 split)
-    # train_dataset, val_dataset = raw["train"].train_test_split(
-    #     test_size=0.2, seed=23
-    # ).values()
-
     train_dataset = raw["train"]
     val_dataset = raw["validation"]
-
-    # Use the original test set as is
     test_dataset = raw["test"]
-
-    # Apply sample limits if specified
     if args.max_train_samples > 0:
         train_dataset = train_dataset.select(range(args.max_train_samples))
     if args.max_eval_samples > 0:
         val_dataset = val_dataset.select(range(args.max_eval_samples))
     if args.max_predict_samples > 0:
         test_dataset = test_dataset.select(range(args.max_predict_samples))
-
-    # Tokenize the test dataset for prediction
     encoded_test = test_dataset.map(lambda x: preprocess_function(x, tokenizer), batched=True)
-
     return train_dataset, val_dataset, test_dataset, encoded_test, tokenizer
-
 
 def main():
     wandb.init(project="mrpc-paraphrase")
@@ -150,17 +112,13 @@ def main():
     args = parse_args()
     train_dataset, val_dataset, test_dataset, encoded_test, tokenizer = prepare_datasets(args, preprocess_function)
     # -------------------- TRAIN --------------------
-    # todo - set trainer to to my best model from hyperparameter search.
-    trainer = None
-    if args.do_train:
-        trainer, output_dir = train(args, tokenizer, {"train": train_dataset, "validation": val_dataset})
-
+    trainer = train(args, tokenizer, {"train": train_dataset, "validation": val_dataset})
+    # -------------------- PREDICT --------------------
     if args.do_predict:
         trainer.model.eval()
         predictions_output = trainer.predict(encoded_test)
         preds = np.argmax(predictions_output.predictions, axis=1)
         save_predictions(preds, test_dataset)
-
     wandb.finish()
 
 

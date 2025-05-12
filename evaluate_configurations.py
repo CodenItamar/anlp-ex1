@@ -1,16 +1,13 @@
 import os
 import wandb
-import pandas as pd
 import numpy as np
-import argparse
 from datasets import load_dataset
 from sklearn.metrics import accuracy_score
 from transformers import (
     AutoModelForSequenceClassification,
-    BertTokenizer,
     Trainer,
     TrainingArguments,
-    DataCollatorWithPadding, AutoTokenizer,
+    AutoTokenizer,
 )
 def preprocess_function(examples, tokenizer):
     return tokenizer(
@@ -25,9 +22,6 @@ def compute_metrics(eval_pred):
     return {"accuracy": accuracy_score(labels, preds)}
 
 def evaluate_configurations():
-    """
-    Load all checkpoint dirs in ./results, evaluate on test set, return dict config->(loss, accuracy).
-    """
     wandb.init(project="eval-configs")
     table = wandb.Table(columns=["Config", "Test Loss", "Test Accuracy"])
     tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
@@ -36,16 +30,19 @@ def evaluate_configurations():
     encoded_test = test_dataset.map(lambda x: preprocess_function(x, tokenizer), batched=True)
     base_dir = "./results"
     results = {}
+    res_txt_path = "res.txt"
+    open(res_txt_path, "w").close()
     for name in sorted(os.listdir(base_dir)):
         cfg_dir = os.path.join(base_dir, name)
         if not os.path.isdir(cfg_dir):
             continue
-        # find last checkpoint
+
         ckpts = [d for d in os.listdir(cfg_dir) if d.startswith("checkpoint-")]
         if not ckpts:
             continue
         ckpts.sort(key=lambda x: int(x.split("-")[-1]))
         last = os.path.join(cfg_dir, ckpts[-1])
+
         print(f"Evaluating {name} at {last}")
         model = AutoModelForSequenceClassification.from_pretrained(last)
         trainer = Trainer(
@@ -66,20 +63,31 @@ def evaluate_configurations():
         misclassified = np.sum(preds != labels)
         acc = accuracy_score(labels, preds)
         print(f"{name}: {misclassified} misclassifications out of {len(labels)}")
+
         results[name] = {
             "loss": loss,
             "accuracy": acc,
             "preds": preds,
             "misclassified": misclassified,
         }
+
         wandb.log({f"test_loss_{name}": loss, f"test_acc_{name}": acc})
         print({f"test_loss_{name}": loss, f"test_acc_{name}": acc})
         table.add_data(name, loss, acc)
+
+        # -------- Save summary to res.txt --------
+        parts = name.split("_")
+        lr = float(parts[0].replace("lr", ""))
+        batch_size = int(parts[1].replace("bs", ""))
+        epoch_num = int(parts[2].replace("ep", ""))
+        with open(res_txt_path, "a") as f:
+            f.write(f"epoch_num: {epoch_num}, lr: {lr}, batch_size: {batch_size}, eval_acc: {acc:.4f}\n")
+
     wandb.log({"evaluation_table": table})
 
     # -------- Logging the examples of the validation set where best succeeded but worst failed --------
     preds_success = results["lr0.0001_bs16_ep3"]["preds"]
-    preds_fail = results["lr0.01_bs32_ep5"]["preds"]
+    preds_fail = results["lr1e-05_bs32_ep3"]["preds"]
     labels = test_dataset["label"]
     sentences1 = test_dataset["sentence1"]
     sentences2 = test_dataset["sentence2"]
